@@ -1,0 +1,28 @@
+# Core agent stack
+langchain
+langchain-core
+langgraph
+python-dotenv
+strictyaml
+# Note: langchain-experimental is intentionally NOT required — the python tool
+# runs code in an isolated subprocess (agenticskills/tools.py), not via the
+# in-process PythonREPLTool.
+
+# Optional: MCP server tools (only needed if you configure mcp_servers /
+# mcp_config_path). Safe to omit otherwise.
+# langchain-mcp-adapters
+
+# Optional: deep-agent variant (agenticskills/deep_agent.py, conf/config_deep.yaml).
+# Only needed for build_deep_agent. Safe to omit otherwise.
+# deepagents
+
+# Optional: E2B cloud sandbox for the deep-agent's `execute` tool
+# (agenticskills/e2b_agent.py, conf/config_e2b.yaml). Needs E2B_API_KEY.
+# langchain-e2b
+# e2b
+
+# NeMo Agent Toolkit provides the `nat` package (SyncBuilder, langgraph_wrapper,
+# react_agent, memory plugins). Install it per its own documentation, e.g.:
+#   pip install nvidia-nat            # base
+#   pip install "nvidia-nat[redis]"   # for conf_redis.yaml
+# Adjust extras to match the configs you run.

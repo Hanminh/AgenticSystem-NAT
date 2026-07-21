@@ -1,0 +1,18 @@
+"""Deep-agent deployment over the Anthropic technical skills.
+
+Same skills as `anthropic_agent.py`, but built with the `deepagents` framework
+(planning + filesystem + optional sub-agents) instead of the plain ReAct graph.
+
+Requires: pip install deepagents
+NAT wires this via `deployments/anthropic_deep_agent.py:my_agent`.
+"""
+
+from agenticskills import as_nat_graph, build_deep_agent
+
+# as_nat_graph -> safe token streaming for `nat serve` /chat/stream (see agenticskills/stream.py).
+my_agent = as_nat_graph(
+    build_deep_agent(
+        skills_subdir="skills_oneai",
+        env_var="ONEAI_SKILLS_DIR",  # optional override
+        # mcp_config_path="conf/mcp_servers.json",   # optionally add MCP tools
+    ))

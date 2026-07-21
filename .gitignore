@@ -1,0 +1,12 @@
+**/__pycache__/**
+**/*.pyc
+conf/*
+conf
+backups
+skills/
+.env
+conf
+.viettel-pptx
+.qdrant_skills
+.tmp
+*.pdf
