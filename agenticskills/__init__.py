@@ -11,7 +11,7 @@ Layout
     ├── langgraph_agents/  agents dựng bằng LangChain / LangGraph
     │       agent.py, agent_qdrant.py, stream.py, optimize_agent{,_v2,_v3,_v4}.py
     └── deep_agents/       agents dựng bằng deepagents (framework `deepagents`)
-            deep_agent.py, e2b_agent.py
+            deep_agent.py, e2b_agent.py, optimize_deep_agent.py
 
 Public API vẫn phẳng và lazy: `from agenticskills import build_agent` hoạt động như trước, dù
 module đã chuyển vào sub-package. Submodule cũng import được theo đường mới, ví dụ
@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 __all__ = [
     "build_agent",
     "build_deep_agent",
+    "build_optimize_deep_agent",
     "build_e2b_deep_agent",
     "resolve_skills_dir",
     "SkillMiddleware",
@@ -42,6 +43,7 @@ if TYPE_CHECKING:  # for type checkers / IDEs only
     from agenticskills.common import resolve_skills_dir
     from agenticskills.deep_agents.deep_agent import build_deep_agent
     from agenticskills.deep_agents.e2b_agent import build_e2b_deep_agent
+    from agenticskills.deep_agents.optimize_deep_agent import build_optimize_deep_agent
     from agenticskills.langgraph_agents.agent import SkillMiddleware, build_agent
     from agenticskills.langgraph_agents.optimize_agent import (
         TwoPhaseSkillMiddleware,
@@ -59,6 +61,8 @@ _LAZY = {
     "resolve_skills_dir": ("agenticskills.common", "resolve_skills_dir"),
     "build_deep_agent": ("agenticskills.deep_agents.deep_agent", "build_deep_agent"),
     "build_e2b_deep_agent": ("agenticskills.deep_agents.e2b_agent", "build_e2b_deep_agent"),
+    "build_optimize_deep_agent": ("agenticskills.deep_agents.optimize_deep_agent",
+                                  "build_optimize_deep_agent"),
     "TOOLS": ("agenticskills.tools", "TOOLS"),
     "bash": ("agenticskills.tools", "bash"),
     "python_repl": ("agenticskills.tools", "python_repl"),

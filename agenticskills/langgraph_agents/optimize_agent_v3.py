@@ -154,7 +154,7 @@ class FullContextSkillMiddleware(TwoPhaseSkillMiddleware):
             return request.override(system_message=system_message)
 
         raw = list(request.messages)
-        context = build_context(raw)   # LỊCH SỬ ĐẦY ĐỦ: LLM output + tool output (no tool input)
+        context = build_context(raw)   # type: ignore # LỊCH SỬ ĐẦY ĐỦ: LLM output + tool output (no tool input)
 
         before = sum(len(_text_of(m)) for m in raw)
         after = sum(len(_text_of(m)) for m in context)
@@ -162,7 +162,7 @@ class FullContextSkillMiddleware(TwoPhaseSkillMiddleware):
             logger.info("[v3] ngữ cảnh gửi model: %s -> %s ký tự (đã bỏ tool input)",
                         f"{before:,}", f"{after:,}")
 
-        return request.override(system_message=system_message, messages=context)
+        return request.override(system_message=system_message, messages=context) # type: ignore
 
 
 # --------------------------------------------------------------------------- #
@@ -216,7 +216,7 @@ def build_optimized_agent_v3(
     servers = _resolve_mcp_servers(mcp_servers, mcp_config_path)
     tools = [*TOOLS, *load_mcp_tools(servers)]
 
-    middleware = FullContextSkillMiddleware(resolved, selector_llm, compact_context=compact_context)
+    middleware = FullContextSkillMiddleware(resolved, selector_llm, compact_context=compact_context) # pyright: ignore[reportArgumentType]
 
     return create_agent(
         model=llm,
