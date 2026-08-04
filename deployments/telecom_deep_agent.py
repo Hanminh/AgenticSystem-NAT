@@ -39,6 +39,20 @@ from agenticskills import as_nat_graph
 
 # --- Bản deepagents cũ (giữ để A/B). Bỏ comment nếu THỰC SỰ cần planning/filesystem/sub-agents
 #     của deepagents — nhưng nó có lỗi "narrate rồi dừng" mô tả ở đầu file.
-from agenticskills import build_deep_agent
-my_agent = as_nat_graph(
-    build_deep_agent(skills_subdir="Telecom_Skills", env_var="TELECOM_SKILL_DIR"))
+# from agenticskills import build_deep_agent
+# my_agent = as_nat_graph(
+#     build_deep_agent(skills_subdir="Telecom_Skills", env_var="TELECOM_SKILL_DIR"))
+
+
+from agenticskills.deep_agents.native_optimize_deep_agent_v2 import (
+    build_native_optimize_deep_agent_v2, as_nat_graph_todos)
+
+my_agent = as_nat_graph_todos(
+    build_native_optimize_deep_agent_v2(
+        skills_subdir="Telecom_Skills",
+        env_var="TELECOM_SKILL_DIR",
+        llm_name="llm",
+        # enable_todos=True,   # mặc định; False -> hành vi giống hệt v1
+    ),
+    # show_todos=True,         # mặc định; stream_nodes=("model",); strip_think=True
+)
