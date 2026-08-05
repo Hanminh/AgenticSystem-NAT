@@ -44,15 +44,26 @@ from agenticskills import as_nat_graph
 #     build_deep_agent(skills_subdir="Telecom_Skills", env_var="TELECOM_SKILL_DIR"))
 
 
-from agenticskills.deep_agents.native_optimize_deep_agent_v2 import (
-    build_native_optimize_deep_agent_v2, as_nat_graph_todos)
+# from agenticskills.deep_agents.native_optimize_deep_agent_v2 import (
+#     build_native_optimize_deep_agent_v2, as_nat_graph_todos)
 
-my_agent = as_nat_graph_todos(
+# my_agent = as_nat_graph_todos(
+#     build_native_optimize_deep_agent_v2(
+#         skills_subdir="Telecom_Skills",
+#         env_var="TELECOM_SKILL_DIR",
+#         llm_name="llm",
+#         # enable_todos=True,   # mặc định; False -> hành vi giống hệt v1
+#     ),
+#     # show_todos=True,         # mặc định; stream_nodes=("model",); strip_think=True
+# )
+
+
+from agenticskills.deep_agents.native_optimize_deep_agent_v2 import build_native_optimize_deep_agent_v2
+from agenticskills.deep_agents.todo_event_stream import as_nat_graph_todo_events
+my_agent = as_nat_graph_todo_events(
     build_native_optimize_deep_agent_v2(
         skills_subdir="Telecom_Skills",
         env_var="TELECOM_SKILL_DIR",
         llm_name="llm",
-        # enable_todos=True,   # mặc định; False -> hành vi giống hệt v1
-    ),
-    # show_todos=True,         # mặc định; stream_nodes=("model",); strip_think=True
-)
+        )
+    )

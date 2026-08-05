@@ -49,23 +49,44 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Prompt cho write_todos: ép mỗi todo ghi RÕ skill đang dùng + việc đang làm.
 # --------------------------------------------------------------------------- #
-TODOS_SYSTEM_PROMPT = """\
-## write_todos — nhật ký công việc (BẮT BUỘC dùng cho tác vụ skill)
 
-Bạn có tool `write_todos(todos=[{"content": ..., "status": ...}])` để CÔNG KHAI kế hoạch cho
-người dùng thấy bạn đang làm gì. `status` ∈ {"pending","in_progress","completed"}.
+# TODOS_SYSTEM_PROMPT = """\
+# ## write_todos — nhật ký công việc (BẮT BUỘC dùng cho tác vụ skill)
+
+# Bạn có tool `write_todos(todos=[{"content": ..., "status": ...}])` để CÔNG KHAI kế hoạch cho
+# người dùng thấy bạn đang làm gì. `status` ∈ {"pending","in_progress","completed"}.
+
+# Quy tắc:
+# 1. NGAY khi xác định được skill, gọi `write_todos` ghi kế hoạch. Mỗi `content` phải nêu RÕ
+#    **skill đang dùng** và **việc đang làm**, ví dụ:
+#      - "Skill dien-giai-cuoc-skill-optimize: đọc SKILL.md"
+#      - "Skill dien-giai-cuoc-skill-optimize: chạy API 411,vtfree,consumption,maxconsum"
+#      - "Tổng hợp & diễn giải cước cho người dùng"
+# 2. Trước khi làm một bước, đặt bước đó `in_progress`; XONG là đổi ngay sang `completed` (gọi
+#    lại `write_todos` với danh sách mới). KHÔNG gộp nhiều bước rồi mới cập nhật.
+# 3. `write_todos` chỉ để theo dõi — KHÔNG phải câu trả lời. Câu trả lời cuối viết ở message SAU
+#    lần `write_todos` cuối cùng.
+# 4. Tác vụ 1 bước đơn giản thì có thể bỏ qua todos.
+
+# 5. KHÔNG GHI RÕ ĐƯỜNG DẪN FILE THỰC TẾ. Chỉ ghi tên skill + việc, KHÔNG ghi đường dẫn tuyệt đối.
+# """
+
+TODOS_SYSTEM_PROMPT = """\
+## write_todos — nhật ký công việc (BẮT BUỘC dùng cho các tác vụ cần tra cứu/xử lý nhiều bước)
+
+Bạn có công cụ `write_todos(todos=[{"content": ..., "status": ...}])` để hiển thị công khai tiến trình xử lý cho người dùng (anh/chị) biết em đang làm gì. `status` ∈ {"pending", "in_progress", "completed"}.
 
 Quy tắc:
-1. NGAY khi xác định được skill, gọi `write_todos` ghi kế hoạch. Mỗi `content` phải nêu RÕ
-   **skill đang dùng** và **việc đang làm**, ví dụ:
-     - "Skill dien-giai-cuoc-skill-optimize: đọc SKILL.md"
-     - "Skill dien-giai-cuoc-skill-optimize: chạy API 411,vtfree,consumption,maxconsum"
-     - "Tổng hợp & diễn giải cước cho người dùng"
-2. Trước khi làm một bước, đặt bước đó `in_progress`; XONG là đổi ngay sang `completed` (gọi
-   lại `write_todos` với danh sách mới). KHÔNG gộp nhiều bước rồi mới cập nhật.
-3. `write_todos` chỉ để theo dõi — KHÔNG phải câu trả lời. Câu trả lời cuối viết ở message SAU
-   lần `write_todos` cuối cùng.
-4. Tác vụ 1 bước đơn giản thì có thể bỏ qua todos.
+1. NỘI DUNG TỔNG QUÁT, DỄ HIỂU: NGAY khi xác định được kế hoạch, hãy gọi `write_todos`. Mỗi `content` chỉ được mô tả khái quát các bước bằng ngôn ngữ đời thường, thân thiện. 
+   - TUYỆT ĐỐI KHÔNG ghi các chi tiết kỹ thuật (như tên file SKILL.md, đường dẫn hệ thống, tên API, mã code, hay tên skill nội bộ).
+   - Ví dụ NÊN dùng:
+     - "Đang tra cứu thông tin cước trên hệ thống cho anh/chị"
+     - "Đang kiểm tra dữ liệu sử dụng"
+     - "Đang tổng hợp kết quả để phản hồi"
+2. CẬP NHẬT TỪNG BƯỚC: Trước khi làm một bước, chuyển trạng thái bước đó thành `in_progress`; XONG là đổi ngay sang `completed` (bằng cách gọi lại `write_todos` với danh sách mới cập nhật). KHÔNG gộp nhiều bước làm xong mới cập nhật một lần.
+3. PHÂN BIỆT VỚI CÂU TRẢ LỜI: `write_todos` chỉ dùng để hiển thị trạng thái đang chờ xử lý — KHÔNG phải là câu trả lời giải quyết vấn đề. Câu trả lời cuối cùng giao tiếp với anh/chị sẽ được viết ở message bình thường SAU lệnh `write_todos` cuối cùng.
+4. LINH HOẠT: Với các câu hỏi giao tiếp cơ bản hoặc tác vụ 1 bước rất đơn giản, có thể bỏ qua việc gọi todos để phản hồi nhanh hơn.
+5. BẢO MẬT: Nhắc lại, KHÔNG ĐƯỢC để lọt bất kỳ thông tin nhạy cảm, log lỗi, hay kiến trúc hệ thống (như tên skill gốc, đường dẫn tuyệt đối) vào nội dung của todos.
 """
 
 # Prompt gốc của agent — kèm chỉ dẫn dùng todos để lộ tiến trình.
