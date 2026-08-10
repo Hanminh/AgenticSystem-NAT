@@ -44,6 +44,7 @@ Xem tài liệu `my_instruction/DEEPAGENTS_0_7_NATIVE_OPTIMIZE.md`.
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -90,25 +91,91 @@ _ANTI_NARRATE_SUFFIX = (
     "(`read_file` để đọc SKILL.md khớp, rồi `execute`). KHÔNG hứa suông rồi dừng.")
 
 
+def _iter_httpx_clients(llm):
+    """Trả về các httpx client (sync + async) mà LangChain `ChatOpenAI` dùng để gọi endpoint."""
+    for attr in ("root_async_client", "root_client"):
+        oai = getattr(llm, attr, None)
+        httpx_client = getattr(oai, "_client", None)
+        if httpx_client is not None:
+            yield httpx_client
+
+
+def _strip_metadata_hooks(llm) -> int:
+    """Gỡ http event hook 'request' mà NAT gắn để inject header `X-Payload-*`.
+
+    NAT `get_llm` dùng `_create_metadata_injection_client`: mỗi request nó đọc
+    `ContextState.input_message.model_extra` và set các header `X-Payload-<key>` (để trace trong
+    log LLM server). Hook này CHỈ chạy khi có `input_message` -> đúng ở `nat serve` (front-end set
+    input_message) mà KHÔNG chạy ở `deep_agent.invoke` standalone (input_message=None). Proxy
+    LiteLLM/vLLM ở đây `json.loads` một trong các header đó -> `Extra data: line 1 column 8
+    (char 7)` (400). Hook thuần để trace nên gỡ AN TOÀN, không ảnh hưởng nội dung request.
+    """
+    removed = 0
+    for httpx_client in _iter_httpx_clients(llm):
+        hooks = getattr(httpx_client, "_event_hooks", None)
+        if isinstance(hooks, dict) and hooks.get("request"):
+            removed += len(hooks["request"])
+            hooks["request"] = []
+    return removed
+
+
+def _attach_request_logger(llm) -> None:
+    """(Chẩn đoán) Log method/url/headers/body của request gửi tới LLM khi `NAT_DEBUG_LLM_REQUEST=1`.
+
+    Dùng để soi CHÍNH XÁC payload gây lỗi 'Extra data' (field nào ở char 7). Chỉ bật khi cần.
+    """
+    async def _alog(request):  # httpx AsyncClient cần hook async
+        try:
+            body = request.content.decode("utf-8", "replace") if request.content else ""
+        except Exception:  # noqa: BLE001
+            body = "<unreadable>"
+        logger.warning("[LLM REQUEST] %s %s\nHEADERS=%s\nBODY=%s",
+                       request.method, str(request.url), dict(request.headers), body[:6000])
+
+    for httpx_client in _iter_httpx_clients(llm):
+        hooks = getattr(httpx_client, "_event_hooks", None)
+        if isinstance(hooks, dict) and _is_async_httpx(httpx_client):
+            hooks.setdefault("request", []).append(_alog)
+
+
+def _is_async_httpx(client) -> bool:
+    return type(client).__name__ == "AsyncClient"
+
+
 def llm_from_config(builder: SyncBuilder, llm_name: str = "llm"):
-    """LLM lấy TRỰC TIẾP từ NAT config (`get_llm`, wrapper LangChain), có TẮT `stream_usage`.
+    """LLM lấy TRỰC TIẾP từ NAT config (`get_llm`, wrapper LangChain), đã lược bỏ 2 thứ NAT thêm
+    vào khiến proxy LiteLLM/vLLM báo `Extra data: line 1 column 8 (char 7)` (400) ở `nat serve`:
 
-    NAT dựng `ChatOpenAI` với `stream_usage=True` -> khi STREAM (nat serve `/chat/stream`,
-    `graph.astream`) nó gửi kèm `stream_options={"include_usage": true}`. Proxy LiteLLM/vLLM ở
-    một số bản parse lỗi chunk usage cuối -> `litellm.BadRequestError ... Extra data: line 1
-    column 8 (char 7)`, làm hỏng nat serve DÙ `deep_agent.invoke` (non-stream) vẫn chạy.
+    1. **Header inject metadata** (`_strip_metadata_hooks`): NAT gắn hook set `X-Payload-*` từ
+       `input_message.model_extra`. Chỉ chạy ở nat serve (có input_message) nên `deep_agent.invoke`
+       standalone không dính — khớp đúng triệu chứng. Proxy `json.loads` header đó -> 400. Gỡ.
+    2. **`stream_usage`** (-> `stream_options`): giữ tắt cho chắc (một số proxy cũng kén).
 
-    `build_langchain_llm` (bản cũ) tạo `ChatOpenAI` KHÔNG bật cờ này nên streaming vốn chạy tốt —
-    đó là lý do bug chỉ xuất hiện sau khi chuyển sang dùng LLM của config. Tắt `stream_usage` để
-    giữ đúng ý "dùng LLM từ config" mà không kéo theo `stream_options` gây lỗi (chỉ mất chunk
-    usage cuối — không ảnh hưởng nội dung/telemetry của NAT).
+    Vẫn đúng ý "dùng LLM từ config": endpoint/model/extra_body/temperature/retry giữ nguyên, chỉ
+    bỏ phần trace-header không cần. Bật `NAT_DEBUG_LLM_REQUEST=1` để log payload thật khi cần soi.
     """
     llm = builder.get_llm(llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+
     try:
         if getattr(llm, "stream_usage", None):
             llm.stream_usage = False
-    except Exception:  # pragma: no cover - phòng khi client bị bọc (retry/thinking)
+    except Exception:  # pragma: no cover
         logger.warning("[deep_agent] không tắt được stream_usage trên LLM config (%s).", llm_name)
+
+    try:
+        n = _strip_metadata_hooks(llm)
+        if n:
+            logger.info("[deep_agent] đã gỡ %d http request-hook (metadata inject) khỏi LLM '%s'.", n, llm_name)
+    except Exception:  # pragma: no cover
+        logger.warning("[deep_agent] không gỡ được metadata hook trên LLM config (%s).", llm_name)
+
+    if os.getenv("NAT_DEBUG_LLM_REQUEST") in ("1", "true", "True"):
+        try:
+            _attach_request_logger(llm)
+            logger.warning("[deep_agent] NAT_DEBUG_LLM_REQUEST bật -> sẽ log payload request LLM.")
+        except Exception:  # pragma: no cover
+            logger.warning("[deep_agent] không gắn được request logger.")
+
     return llm
 
 
