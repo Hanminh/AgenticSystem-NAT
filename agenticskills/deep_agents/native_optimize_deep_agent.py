@@ -57,7 +57,6 @@ from agenticskills.common import (
     _resolve_mcp_servers,
     resolve_skills_dir,
 )
-from agenticskills.langgraph_agents.optimize_agent_v2 import build_langchain_llm
 from agenticskills.mcp import load_mcp_tools
 
 load_dotenv()
@@ -89,6 +88,28 @@ lời gọi tool trong CHÍNH lượt đó. Nói một câu ngắn thì được
 _ANTI_NARRATE_SUFFIX = (
     "Nhắc lại: nếu còn thiếu dữ liệu, hãy GỌI TOOL ngay trong lượt này "
     "(`read_file` để đọc SKILL.md khớp, rồi `execute`). KHÔNG hứa suông rồi dừng.")
+
+
+def llm_from_config(builder: SyncBuilder, llm_name: str = "llm"):
+    """LLM lấy TRỰC TIẾP từ NAT config (`get_llm`, wrapper LangChain), có TẮT `stream_usage`.
+
+    NAT dựng `ChatOpenAI` với `stream_usage=True` -> khi STREAM (nat serve `/chat/stream`,
+    `graph.astream`) nó gửi kèm `stream_options={"include_usage": true}`. Proxy LiteLLM/vLLM ở
+    một số bản parse lỗi chunk usage cuối -> `litellm.BadRequestError ... Extra data: line 1
+    column 8 (char 7)`, làm hỏng nat serve DÙ `deep_agent.invoke` (non-stream) vẫn chạy.
+
+    `build_langchain_llm` (bản cũ) tạo `ChatOpenAI` KHÔNG bật cờ này nên streaming vốn chạy tốt —
+    đó là lý do bug chỉ xuất hiện sau khi chuyển sang dùng LLM của config. Tắt `stream_usage` để
+    giữ đúng ý "dùng LLM từ config" mà không kéo theo `stream_options` gây lỗi (chỉ mất chunk
+    usage cuối — không ảnh hưởng nội dung/telemetry của NAT).
+    """
+    llm = builder.get_llm(llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+    try:
+        if getattr(llm, "stream_usage", None):
+            llm.stream_usage = False
+    except Exception:  # pragma: no cover - phòng khi client bị bọc (retry/thinking)
+        logger.warning("[deep_agent] không tắt được stream_usage trên LLM config (%s).", llm_name)
+    return llm
 
 
 def _register_lean_profile(
@@ -146,8 +167,6 @@ def build_native_optimize_deep_agent(
     skills_subdir: str | None = None,
     env_var: str | None = None,
     llm_name: str = "llm",
-    disable_thinking: bool = True,
-    temperature: float | None = 0.0,
     lean_profile: bool = True,
     disable_general_purpose: bool = True,
     exclude_summarization: bool = True,
@@ -165,11 +184,10 @@ def build_native_optimize_deep_agent(
 
     Args:
         skills_dir / skills_subdir / env_var: thư mục skill (progressive disclosure của deepagents).
-        llm_name: tên LLM trong NAT config.
-        disable_thinking: `True` (mặc định) -> dựng LLM bằng LangChain với `enable_thinking=False`
-            (clone endpoint từ config). Trị khối `<think>` của Qwen.
-        temperature: ghim nhiệt độ. `0.0` (mặc định) = greedy -> tool-calling ỔN ĐỊNH, hết
-            "chập chờn". `None` -> để nguyên (server tự quyết — KHÔNG khuyến nghị).
+        llm_name: tên LLM trong NAT config. LLM dùng TRỰC TIẾP từ config (không dựng lại bằng
+            LangChain). Điều khiển thinking + temperature ngay trong YAML `llms.<llm_name>`:
+            đặt `extra_body.chat_template_kwargs.enable_thinking: false` + `temperature: 0` để
+            tool-calling ổn định (greedy) và trị khối `<think>` của Qwen.
         lean_profile: `True` (mặc định) -> đăng ký HarnessProfile 0.7.0 để cắt middleware/tool
             thừa (xem cảnh báo REGISTRY TOÀN CỤC ở docstring module). `False` -> chỉ tối ưu
             model + system_prompt, KHÔNG đụng registry.
@@ -188,24 +206,14 @@ def build_native_optimize_deep_agent(
     resolved = resolve_skills_dir(skills_dir, skills_subdir=skills_subdir, env_var=env_var)
 
     builder = SyncBuilder.current()
-    config_llm = builder.get_llm(llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+    # --- Model: lấy TRỰC TIẾP từ config NAT (`llms.<llm_name>`), KHÔNG dựng lại bằng LangChain.
+    #     thinking (extra_body.chat_template_kwargs.enable_thinking) + temperature điều khiển trong
+    #     YAML. Muốn tool-calling ổn định: enable_thinking: false + temperature: 0 (greedy).
+    #     `llm_from_config` tắt stream_usage để tránh lỗi stream_options của proxy vLLM. -----------
+    llm = llm_from_config(builder, llm_name)
 
-    # --- Model: thinking OFF + temperature ghim (điểm quyết định độ tin cậy) ---------------
-    if disable_thinking:
-        llm = build_langchain_llm(config_llm,
-                                  enable_thinking=False,
-                                  temperature=temperature,
-                                  label="native deep LLM")
-    else:
-        llm = config_llm
-        if temperature is not None:
-            try:
-                llm = config_llm.bind(temperature=temperature)
-            except Exception:  # pragma: no cover - phòng khi client không hỗ trợ bind
-                logger.warning("[native_optimize] không bind được temperature vào config LLM.")
-
-    # tên model để làm khoá profile (clone từ ChatOpenAI của config)
-    model_name = getattr(config_llm, "model_name", None) or getattr(llm, "model_name", "unknown")
+    # tên model để làm khoá profile
+    model_name = getattr(llm, "model_name", None) or "unknown"
 
     # --- HarnessProfile 0.7.0 (tuỳ chọn) ---------------------------------------------------
     if lean_profile:
@@ -237,10 +245,9 @@ def build_native_optimize_deep_agent(
         )
 
     logger.info(
-        "[native_optimize] skills=%s | thinking=%s | temperature=%s | lean_profile=%s",
+        "[native_optimize] skills=%s | llm=%s (từ config, thinking/temperature theo YAML) | lean_profile=%s",
         resolved,
-        "OFF" if disable_thinking else "theo config",
-        temperature,
+        model_name,
         lean_profile,
     )
 

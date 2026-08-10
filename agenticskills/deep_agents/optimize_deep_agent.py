@@ -66,7 +66,7 @@ from agenticskills.common import (
     _resolve_mcp_servers,
     resolve_skills_dir,
 )
-from agenticskills.langgraph_agents.optimize_agent_v2 import build_langchain_llm
+from agenticskills.deep_agents.native_optimize_deep_agent import llm_from_config
 from agenticskills.langgraph_agents.optimize_agent_v3 import build_optimized_agent_v3
 from agenticskills.mcp import load_mcp_tools
 
@@ -123,7 +123,6 @@ def build_optimize_deep_agent(
     skills_subdir: str | None = None,
     env_var: str | None = None,
     llm_name: str = "llm",
-    main_llm_disable_thinking: bool = True,
     subagent_name: str = SKILL_RUNNER_NAME,
     subagent_description: str = SKILL_RUNNER_DESCRIPTION,
     subagent_kwargs: dict[str, Any] | None = None,
@@ -144,11 +143,10 @@ def build_optimize_deep_agent(
     Args:
         skills_dir / skills_subdir / env_var: thư mục skill, phân giải bởi `resolve_skills_dir`.
             Dùng chung cho CẢ sub-agent v3 và (nếu bật) skill catalog của agent chính.
-        llm_name: tên LLM trong NAT config, dùng cho cả agent chính lẫn sub-agent.
-        main_llm_disable_thinking: `True` (mặc định) -> LLM của agent CHÍNH dựng bằng LangChain
-            với thinking TẮT (clone endpoint từ NAT config). Đây là knob tốc độ lớn nhất:
-            deepagents chạy nhiều vòng ReAct, mỗi vòng bật thinking là một khối `<think>` bị
-            sinh ra rồi vứt đi. `False` -> dùng thẳng LLM của NAT config (thinking như cấu hình).
+        llm_name: tên LLM trong NAT config, dùng cho cả agent chính lẫn sub-agent. LLM của agent
+            CHÍNH dùng TRỰC TIẾP từ config (không dựng lại bằng LangChain). Điều khiển thinking +
+            temperature ngay trong YAML `llms.<llm_name>` (đặt `extra_body.chat_template_kwargs.
+            enable_thinking: false` + `temperature: 0` để nhanh + tool-calling ổn định).
         subagent_name / subagent_description: định danh sub-agent trong tool `task`. Description
             là thứ DUY NHẤT agent chính dựa vào để quyết định có giao việc hay không — sửa nó
             nếu bộ skill của bạn hẹp hơn mô tả mặc định.
@@ -181,9 +179,10 @@ def build_optimize_deep_agent(
     resolved = resolve_skills_dir(skills_dir, skills_subdir=skills_subdir, env_var=env_var)
 
     builder = SyncBuilder.current()
-    config_llm = builder.get_llm(llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
-    llm = (build_langchain_llm(config_llm, enable_thinking=False, label="deep orchestrator LLM")
-           if main_llm_disable_thinking else config_llm)
+    # LLM agent CHÍNH lấy TRỰC TIẾP từ config NAT — KHÔNG dựng lại bằng LangChain. thinking &
+    # temperature điều khiển trong YAML `llms.<llm_name>` (enable_thinking: false + temperature: 0).
+    # `llm_from_config` tắt stream_usage -> tránh stream_options gây lỗi proxy vLLM khi streaming.
+    llm = llm_from_config(builder, llm_name)
 
     # --- Sub-agent nhanh: chính là graph optimize_agent_v3 ---------------------
     if subagent_runnable is None:
@@ -228,11 +227,10 @@ def build_optimize_deep_agent(
         )
 
     logger.info(
-        "[optimize_deep] skills=%s | sub-agent=%s (optimize_agent_v3) | thinking agent chính=%s "
-        "| catalog skill cho agent chính=%s | chặn general-purpose=%s",
+        "[optimize_deep] skills=%s | sub-agent=%s (optimize_agent_v3) | LLM agent chính từ config "
+        "(thinking/temperature theo YAML) | catalog skill cho agent chính=%s | chặn general-purpose=%s",
         resolved,
         subagent_name,
-        "OFF" if main_llm_disable_thinking else "ON",
         main_agent_skills,
         replace_general_purpose,
     )

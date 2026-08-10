@@ -36,8 +36,7 @@ from agenticskills.common import (
     _resolve_mcp_servers,
     resolve_skills_dir,
 )
-from agenticskills.deep_agents.native_optimize_deep_agent import _register_lean_profile
-from agenticskills.langgraph_agents.optimize_agent_v2 import build_langchain_llm
+from agenticskills.deep_agents.native_optimize_deep_agent import _register_lean_profile, llm_from_config
 from agenticskills.langgraph_agents.stream import ThinkStripper, _text_of, strip_think_full
 from agenticskills.mcp import load_mcp_tools
 
@@ -117,8 +116,6 @@ def build_native_optimize_deep_agent_v2(
     skills_subdir: str | None = None,
     env_var: str | None = None,
     llm_name: str = "llm",
-    disable_thinking: bool = True,
-    temperature: float | None = 0.0,
     lean_profile: bool = True,
     disable_general_purpose: bool = True,
     exclude_summarization: bool = True,
@@ -150,20 +147,13 @@ def build_native_optimize_deep_agent_v2(
     resolved = resolve_skills_dir(skills_dir, skills_subdir=skills_subdir, env_var=env_var)
 
     builder = SyncBuilder.current()
-    config_llm = builder.get_llm(llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+    # LLM lấy TRỰC TIẾP từ config NAT (`llms.<llm_name>`) — KHÔNG dựng lại bằng LangChain nữa.
+    # thinking & temperature điều khiển NGAY trong YAML: đặt `extra_body.chat_template_kwargs.
+    # enable_thinking: false` + `temperature: 0` để tool-calling ổn định (greedy).
+    # `llm_from_config` tắt stream_usage -> tránh stream_options gây lỗi proxy vLLM khi streaming.
+    llm = llm_from_config(builder, llm_name)
 
-    if disable_thinking:
-        llm = build_langchain_llm(config_llm, enable_thinking=False, temperature=temperature,
-                                  label="native deep LLM v2")
-    else:
-        llm = config_llm
-        if temperature is not None:
-            try:
-                llm = config_llm.bind(temperature=temperature)
-            except Exception:  # pragma: no cover
-                logger.warning("[native_optimize_v2] không bind được temperature vào config LLM.")
-
-    model_name = getattr(config_llm, "model_name", None) or getattr(llm, "model_name", "unknown")
+    model_name = getattr(llm, "model_name", None) or "unknown"
 
     if lean_profile:
         _register_lean_profile(
@@ -201,10 +191,10 @@ def build_native_optimize_deep_agent_v2(
         )
 
     logger.info(
-        "[native_optimize_v2] skills=%s | thinking=%s | temperature=%s | todos=%s | lean_profile=%s",
+        "[native_optimize_v2] skills=%s | llm=%s (từ config, thinking/temperature theo YAML) | "
+        "todos=%s | lean_profile=%s",
         resolved,
-        "OFF" if disable_thinking else "theo config",
-        temperature,
+        model_name,
         enable_todos,
         lean_profile,
     )
