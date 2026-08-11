@@ -91,6 +91,31 @@ _ANTI_NARRATE_SUFFIX = (
     "(`read_file` để đọc SKILL.md khớp, rồi `execute`). KHÔNG hứa suông rồi dừng.")
 
 
+def resolve_skill_placeholders(skills_dir: "Path | str") -> int:
+    """Thay `<skill_dir>` trong mọi `SKILL.md` bằng đường dẫn TUYỆT ĐỐI của skill đó (idempotent).
+
+    LÝ DO (đã reproduce bằng NIM): khi SKILL.md để placeholder `<skill_dir>` trong lệnh
+    `python <skill_dir>/scripts/xxx.py`, model phải tự suy ra path tuyệt đối. Model làm việc này
+    KHÔNG ổn định — có lúc chạy đúng, có lúc để nguyên `<skill_dir>`, có lúc bịa ra `tên-skill`
+    làm lệnh (`lookup-skill 0988...` -> Permission denied). Đây là một nguồn CHÍNH của "tool gọi
+    lỗi, lúc được lúc không". Resolve sẵn tại lúc build -> model chỉ việc copy nguyên lệnh.
+
+    Trả về số file đã sửa. Không có placeholder -> không đụng gì (an toàn chạy lại nhiều lần).
+    """
+    root = Path(skills_dir)
+    changed = 0
+    for skill_md in root.glob("**/SKILL.md"):
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "<skill_dir>" in text:
+            abs_dir = str(skill_md.parent.resolve())  # LUÔN tuyệt đối, kể cả khi root tương đối
+            skill_md.write_text(text.replace("<skill_dir>", abs_dir), encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def _iter_httpx_clients(llm):
     """Trả về các httpx client (sync + async) mà LangChain `ChatOpenAI` dùng để gọi endpoint."""
     for attr in ("root_async_client", "root_client"):
@@ -125,12 +150,21 @@ def _attach_request_logger(llm) -> None:
     Dùng để soi CHÍNH XÁC payload gây lỗi 'Extra data' (field nào ở char 7). Chỉ bật khi cần.
     """
     async def _alog(request):  # httpx AsyncClient cần hook async
+        import json as _json
         try:
             body = request.content.decode("utf-8", "replace") if request.content else ""
         except Exception:  # noqa: BLE001
             body = "<unreadable>"
-        logger.warning("[LLM REQUEST] %s %s\nHEADERS=%s\nBODY=%s",
-                       request.method, str(request.url), dict(request.headers), body[:6000])
+        # Tóm tắt LUÔN chứa các field then chốt dù body dài (stream, có tools?, tool_choice, #messages).
+        summary = {}
+        try:
+            d = _json.loads(body)
+            summary = {"stream": d.get("stream"), "n_tools": len(d.get("tools") or []),
+                       "tool_choice": d.get("tool_choice"), "n_messages": len(d.get("messages") or [])}
+        except Exception:  # noqa: BLE001
+            summary = {"parse": "fail"}
+        logger.warning("[LLM REQUEST SUMMARY] %s", summary)
+        logger.warning("[LLM REQUEST] %s %s\nBODY=%s", request.method, str(request.url), body[:2000])
 
     for httpx_client in _iter_httpx_clients(llm):
         hooks = getattr(httpx_client, "_event_hooks", None)
@@ -161,6 +195,18 @@ def llm_from_config(builder: SyncBuilder, llm_name: str = "llm"):
             llm.stream_usage = False
     except Exception:  # pragma: no cover
         logger.warning("[deep_agent] không tắt được stream_usage trên LLM config (%s).", llm_name)
+
+    # --- FIX "Extra data" khi deep agent là WORKFLOW trực tiếp (langgraph_wrapper) -------------
+    # Khi đó `/chat/stream` chạy `graph.astream(stream_mode="messages")` -> các lượt gọi tool của
+    # deep agent gửi `stream:true` -> STREAMING tool-call-parser của vLLM/Qwen parse dở dang ->
+    # `Extra data: line 1 column 8 (char 7)` (đã đo trực tiếp: workflow trực tiếp = stream:true;
+    # qua react = stream:false, không lỗi). `disable_streaming="tool_calling"` ép các request CÓ
+    # tools chạy `stream:false` (parser non-streaming, chắc chắn), nên né hẳn lỗi mà KHÔNG cần đổi
+    # kiến trúc; write_todos/tiến trình vẫn hiện vì step đến từ callback (không phụ thuộc stream).
+    try:
+        llm.disable_streaming = "tool_calling"
+    except Exception:  # pragma: no cover
+        logger.warning("[deep_agent] không đặt được disable_streaming trên LLM config (%s).", llm_name)
 
     try:
         n = _strip_metadata_hooks(llm)
@@ -271,6 +317,9 @@ def build_native_optimize_deep_agent(
         Graph deepagents đã compile. Bọc `as_nat_graph(...)` trước khi wire vào langgraph_wrapper.
     """
     resolved = resolve_skills_dir(skills_dir, skills_subdir=skills_subdir, env_var=env_var)
+    _n = resolve_skill_placeholders(resolved)
+    if _n:
+        logger.info("[native_optimize] đã resolve '<skill_dir>' -> path tuyệt đối trong %d SKILL.md.", _n)
 
     builder = SyncBuilder.current()
     # --- Model: lấy TRỰC TIẾP từ config NAT (`llms.<llm_name>`), KHÔNG dựng lại bằng LangChain.

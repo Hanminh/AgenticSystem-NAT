@@ -1,7 +1,16 @@
-"""native_optimize_deep_agent_v2 — như v1, THÊM `TodoListMiddleware` để "phát trực tiếp" cho
+"""native_optimize_deep_agent_v2 — như v1, có TÙY CHỌN `TodoListMiddleware` để "phát trực tiếp" cho
 người dùng biết agent **đang dùng skill nào** và **đang định làm gì**.
 
-Khác v1 (`native_optimize_deep_agent.py`) ở hai điểm:
+⚠️ CẬP NHẬT QUAN TRỌNG: `enable_todos` giờ MẶC ĐỊNH `False`. Lý do (đã verify bằng cách build &
+liệt kê tool, đối chiếu với `build_deep_agent` mà user báo là CHẠY ĐƯỢC): tool `write_todos` có
+schema LỒNG NHAU (`$defs`/`$ref` -> mảng object `{content, status(enum)}`) — đây là tool DUY NHẤT
+v2-có-todos có mà `build_deep_agent` không có, và là nguyên nhân proxy vLLM/LiteLLM báo
+`litellm.BadRequestError ... Extra data: line 1 column 8 (char 7)` (tool-parser nghẹn schema lồng).
+Tắt todos -> tập tool là tập CON của `build_deep_agent` -> hết lỗi, VẪN giữ mọi cải tiến độ tin cậy
+(temperature 0, prompt chống narrate, lean profile). Bật lại `enable_todos=True` CHỈ khi proxy đã
+sửa tool-parser (vd vLLM `--tool-call-parser hermes`) hoặc trên endpoint parser khỏe (NIM).
+
+Khác v1 (`native_optimize_deep_agent.py`) ở hai điểm (khi `enable_todos=True`):
 
 1. **Gắn `TodoListMiddleware`** (langchain, không nằm trong stack mặc định 0.7.0) qua tham số
    `middleware=` của `create_deep_agent`. Middleware này cấp tool `write_todos(todos=[{content,
@@ -36,7 +45,11 @@ from agenticskills.common import (
     _resolve_mcp_servers,
     resolve_skills_dir,
 )
-from agenticskills.deep_agents.native_optimize_deep_agent import _register_lean_profile, llm_from_config
+from agenticskills.deep_agents.native_optimize_deep_agent import (
+    _register_lean_profile,
+    llm_from_config,
+    resolve_skill_placeholders,
+)
 from agenticskills.langgraph_agents.stream import ThinkStripper, _text_of, strip_think_full
 from agenticskills.mcp import load_mcp_tools
 
@@ -121,7 +134,7 @@ def build_native_optimize_deep_agent_v2(
     exclude_summarization: bool = True,
     excluded_tools: tuple[str, ...] = (),
     profile_key: str | None = None,
-    enable_todos: bool = True,
+    enable_todos: bool = False,
     todos_system_prompt: str = TODOS_SYSTEM_PROMPT,
     system_prompt: str | None = None,
     memory=None,
@@ -134,8 +147,15 @@ def build_native_optimize_deep_agent_v2(
     """Như `build_native_optimize_deep_agent` nhưng thêm `TodoListMiddleware` (lộ tiến trình).
 
     Args (chỉ nêu phần MỚI so với v1):
-        enable_todos: `True` (mặc định) -> gắn `TodoListMiddleware` (tool `write_todos`) để agent
-            công khai "đang dùng skill nào / định làm gì". `False` -> hành vi giống hệt v1.
+        enable_todos: `False` (MẶC ĐỊNH — đã đổi) -> KHÔNG gắn `write_todos`; tập tool khi đó là tập
+            CON của `build_deep_agent` (đã kiểm chứng KHÔNG dính lỗi tool-parser).
+            `True` -> gắn `TodoListMiddleware` (tool `write_todos`) để lộ tiến trình cho todobridge.
+            ⚠️ CẢNH BÁO (đã verify): `write_todos` có schema LỒNG NHAU (`$defs`/`$ref` -> mảng object
+            `{content, status(enum)}`). Trên proxy vLLM/LiteLLM có tool-parser kén, chính tool này gây
+            `litellm.BadRequestError ... Extra data: line 1 column 8 (char 7)`. Đây là tool DUY NHẤT
+            v2-có-todos có mà `build_deep_agent` (chạy được) KHÔNG có. CHỈ bật `True` sau khi đã sửa
+            tool-parser của proxy (vd vLLM `--tool-call-parser hermes`), hoặc trên endpoint parser khỏe
+            (NIM). Xem `my_instruction/` để biết chi tiết.
         todos_system_prompt: prompt hướng dẫn cách ghi todos (mặc định ép ghi rõ skill + việc).
 
     Các tham số còn lại xem `native_optimize_deep_agent.build_native_optimize_deep_agent`.
@@ -145,6 +165,9 @@ def build_native_optimize_deep_agent_v2(
         stream CẢ token trả lời LẪN tiến trình todos ra cho người dùng.
     """
     resolved = resolve_skills_dir(skills_dir, skills_subdir=skills_subdir, env_var=env_var)
+    _n = resolve_skill_placeholders(resolved)
+    if _n:
+        logger.info("[native_optimize_v2] đã resolve '<skill_dir>' -> path tuyệt đối trong %d SKILL.md.", _n)
 
     builder = SyncBuilder.current()
     # LLM lấy TRỰC TIẾP từ config NAT (`llms.<llm_name>`) — KHÔNG dựng lại bằng LangChain nữa.
@@ -179,6 +202,10 @@ def build_native_optimize_deep_agent_v2(
         try:
             from langchain.agents.middleware import TodoListMiddleware
             middleware.append(TodoListMiddleware(system_prompt=todos_system_prompt))
+            logger.warning(
+                "[native_optimize_v2] enable_todos=True -> thêm tool `write_todos` (schema lồng nhau). "
+                "⚠️ Trên proxy vLLM/LiteLLM có tool-parser kén, tool này gây lỗi 'Extra data ...(char 7)'. "
+                "Chỉ dùng khi proxy đã sửa --tool-call-parser hoặc endpoint parser khỏe (NIM).")
         except ImportError:  # pragma: no cover
             logger.warning("[native_optimize_v2] không import được TodoListMiddleware -> bỏ qua todos.")
 
