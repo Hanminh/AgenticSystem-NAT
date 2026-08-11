@@ -196,17 +196,33 @@ def llm_from_config(builder: SyncBuilder, llm_name: str = "llm"):
     except Exception:  # pragma: no cover
         logger.warning("[deep_agent] không tắt được stream_usage trên LLM config (%s).", llm_name)
 
-    # --- FIX "Extra data" khi deep agent là WORKFLOW trực tiếp (langgraph_wrapper) -------------
-    # Khi đó `/chat/stream` chạy `graph.astream(stream_mode="messages")` -> các lượt gọi tool của
-    # deep agent gửi `stream:true` -> STREAMING tool-call-parser của vLLM/Qwen parse dở dang ->
-    # `Extra data: line 1 column 8 (char 7)` (đã đo trực tiếp: workflow trực tiếp = stream:true;
-    # qua react = stream:false, không lỗi). `disable_streaming="tool_calling"` ép các request CÓ
-    # tools chạy `stream:false` (parser non-streaming, chắc chắn), nên né hẳn lỗi mà KHÔNG cần đổi
-    # kiến trúc; write_todos/tiến trình vẫn hiện vì step đến từ callback (không phụ thuộc stream).
-    try:
-        llm.disable_streaming = "tool_calling"
-    except Exception:  # pragma: no cover
-        logger.warning("[deep_agent] không đặt được disable_streaming trên LLM config (%s).", llm_name)
+    # --- STREAMING vs "Extra data": ĐÁNH ĐỔI có công tắc ------------------------------------------
+    # Nền: khi deep agent là WORKFLOW trực tiếp, `/chat/stream` chạy `graph.astream(messages)`.
+    #   * disable_streaming=False (MẶC ĐỊNH ở đây): mọi lượt model chạy `stream:true` -> câu trả lời
+    #     CUỐI stream token-by-token ra thinkbridge (ĐÃ đo bằng NIM: 36 chunk). Đây là điều bạn muốn.
+    #     Nhược: lượt GỌI TOOL cũng stream:true -> nếu proxy vLLM/Qwen dùng STREAMING tool-parser kén,
+    #     có thể tái phát `Extra data: line 1 column 8 (char 7)`.
+    #   * disable_streaming="tool_calling": ép request CÓ tools chạy `stream:false` (parser non-stream,
+    #     chắc ăn) -> né "Extra data", NHƯNG vì deep agent luôn bind tools nên CẢ câu trả lời cuối cũng
+    #     non-stream -> đáp án về MỘT CỤC (đúng triệu chứng "không thấy streaming" trước đây).
+    # Vì hai thứ xung khắc và không thể per-turn, dùng ENV để chọn (mặc định ưu tiên STREAMING):
+    #     NAT_DEEP_DISABLE_STREAMING=1  -> quay lại chế độ chống "Extra data" (mất streaming đáp án).
+    # Nếu bật streaming mà "Extra data" quay lại: fix ĐÚNG là phía server (vLLM `--tool-call-parser
+    # hermes` + `--enable-auto-tool-choice`) để streaming tool-parse hoạt động.
+    _ds = os.getenv("NAT_DEEP_DISABLE_STREAMING")
+    if _ds in ("1", "true", "True"):
+        try:
+            llm.disable_streaming = "tool_calling"
+            logger.info("[deep_agent] NAT_DEEP_DISABLE_STREAMING bật -> disable_streaming='tool_calling' "
+                        "(chống 'Extra data', KHÔNG stream đáp án).")
+        except Exception:  # pragma: no cover
+            logger.warning("[deep_agent] không đặt được disable_streaming trên LLM config (%s).", llm_name)
+    else:
+        # Bảo đảm streaming BẬT (phòng khi NAT/bản dựng trước set khác mặc định).
+        try:
+            llm.disable_streaming = False
+        except Exception:  # pragma: no cover
+            pass
 
     try:
         n = _strip_metadata_hooks(llm)
@@ -283,7 +299,7 @@ def build_native_optimize_deep_agent(
     lean_profile: bool = True,
     disable_general_purpose: bool = True,
     exclude_summarization: bool = True,
-    excluded_tools: tuple[str, ...] = (),
+    excluded_tools: tuple[str, ...] = ("edit_file", ),
     profile_key: str | None = None,
     system_prompt: str | None = None,
     memory=None,

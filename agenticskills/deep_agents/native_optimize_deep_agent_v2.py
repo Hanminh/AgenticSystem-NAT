@@ -132,7 +132,7 @@ def build_native_optimize_deep_agent_v2(
     lean_profile: bool = True,
     disable_general_purpose: bool = True,
     exclude_summarization: bool = True,
-    excluded_tools: tuple[str, ...] = (),
+    excluded_tools: tuple[str, ...] = ("edit_file", ),
     profile_key: str | None = None,
     enable_todos: bool = False,
     todos_system_prompt: str = TODOS_SYSTEM_PROMPT,
