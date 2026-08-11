@@ -46,6 +46,7 @@ from agenticskills.common import (
     resolve_skills_dir,
 )
 from agenticskills.deep_agents.native_optimize_deep_agent import (
+    NATIVE_OPTIMIZE_SYSTEM_PROMPT,  # prompt v1: chỉ read_file + execute, KHÔNG nhắc write_todos
     _register_lean_profile,
     llm_from_config,
     resolve_skill_placeholders,
@@ -226,11 +227,17 @@ def build_native_optimize_deep_agent_v2(
         lean_profile,
     )
 
+    # Prompt PHẢI khớp bộ tool: khi enable_todos=False thì KHÔNG có tool `write_todos`, nên dùng
+    # prompt v1 (chỉ read_file + execute). Nếu vẫn dùng prompt V2 (nhắc "gọi write_todos ghi kế
+    # hoạch") mà không có tool đó -> model ứng biến, ghi nội dung todo/planning vào FILE qua
+    # `write_file`. Chọn đúng prompt để tránh hành vi này.
+    default_prompt = NATIVE_OPTIMIZE_V2_SYSTEM_PROMPT if enable_todos else NATIVE_OPTIMIZE_SYSTEM_PROMPT
+
     return create_deep_agent(
         model=llm,
         tools=mcp_tools,
-        system_prompt=system_prompt or NATIVE_OPTIMIZE_V2_SYSTEM_PROMPT,
-        middleware=middleware,         # <- TodoListMiddleware ở đây
+        system_prompt=system_prompt or default_prompt,
+        middleware=middleware,         # <- TodoListMiddleware ở đây (chỉ khi enable_todos)
         skills=[str(resolved)],
         backend=backend,
         checkpointer=memory,
