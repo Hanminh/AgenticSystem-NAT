@@ -160,6 +160,7 @@ def _attach_request_logger(llm) -> None:
         try:
             d = _json.loads(body)
             summary = {"stream": d.get("stream"), "n_tools": len(d.get("tools") or []),
+                       "parallel_tool_calls": d.get("parallel_tool_calls"),
                        "tool_choice": d.get("tool_choice"), "n_messages": len(d.get("messages") or [])}
         except Exception:  # noqa: BLE001
             summary = {"parse": "fail"}
@@ -223,6 +224,19 @@ def llm_from_config(builder: SyncBuilder, llm_name: str = "llm"):
             llm.disable_streaming = False
         except Exception:  # pragma: no cover
             pass
+
+    # --- TẮT parallel tool calls (né bug parser vLLM/Qwen) -----------------------------------------
+    # Đã reproduce: khi model phát NHIỀU tool call SONG SONG, tool-parser của proxy vLLM/Qwen DROP
+    # dấu '{' mở đầu của tool call THỨ HAI -> args hỏng (`"key": ...}` thiếu '{') -> lần request kế
+    # proxy `json.loads(args)` báo `Extra data: line 1 column 13 (char 12)`. Ép `parallel_tool_calls
+    # =False` -> model gọi TỪNG tool một -> parser không lạc offset. (Tắt được bằng
+    # NAT_DEEP_ALLOW_PARALLEL_TOOLS=1 nếu proxy đã sửa parser.)
+    if os.getenv("NAT_DEEP_ALLOW_PARALLEL_TOOLS") not in ("1", "true", "True"):
+        try:
+            llm.model_kwargs = {**(getattr(llm, "model_kwargs", None) or {}), "parallel_tool_calls": False}
+            logger.info("[deep_agent] đặt parallel_tool_calls=False (né bug drop '{' tool call thứ 2 của proxy).")
+        except Exception:  # pragma: no cover
+            logger.warning("[deep_agent] không đặt được parallel_tool_calls=False trên LLM (%s).", llm_name)
 
     try:
         n = _strip_metadata_hooks(llm)

@@ -17,6 +17,7 @@ Chỉ khác duy nhất là SCHEMA ARGS của tool (chuỗi thay vì mảng-objec
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
 from langchain.agents.middleware.todo import (  # tái dùng state schema (Todo) + kế thừa middleware
@@ -31,10 +32,14 @@ _VALID_STATUS = ("pending", "in_progress", "completed")
 
 
 def parse_flat_todos(todos_text: str) -> list[Todo]:
-    """Chuỗi 'status|nội dung' (mỗi dòng) -> list[{content, status}]. Lỏng tay: dòng thiếu status
-    coi như in_progress; status lạ -> in_progress; bỏ dòng rỗng."""
+    """`'status|nd ;; status|nd'` (MỘT DÒNG) -> list[{content, status}]. Cũng chấp nhận xuống dòng.
+
+    Lỏng tay: thiếu status coi như in_progress; status lạ -> in_progress; bỏ phần rỗng.
+    Dùng `;;` (một dòng) THAY xuống dòng vì newline trong giá trị JSON của tool call làm parser
+    vLLM/Qwen dễ hỏng — xem `_make_write_todos_tool`.
+    """
     todos: list[Todo] = []
-    for raw in (todos_text or "").splitlines():
+    for raw in re.split(r";;|\r?\n", todos_text or ""):   # tách theo ';;' HOẶC newline
         line = raw.strip()
         if not line:
             continue
@@ -73,8 +78,9 @@ def _make_write_todos_tool(description: str):
         """Ghi/cập nhật checklist tiến trình (state `todos`).
 
         Args:
-            todos_text: MỖI DÒNG một bước dạng `status|nội dung`
-                (status ∈ pending | in_progress | completed).
+            todos_text: MỘT DÒNG duy nhất; các bước cách nhau bằng ` ;; `, mỗi bước dạng
+                `status|nội dung` (status ∈ pending|in_progress|completed). TUYỆT ĐỐI KHÔNG xuống
+                dòng. VD: `in_progress|Đang tra cứu ;; pending|Tổng hợp kết quả`.
         """
         todos = parse_flat_todos(todos_text)
         return Command(update={
@@ -86,9 +92,11 @@ def _make_write_todos_tool(description: str):
 
 
 FLAT_TODOS_TOOL_DESCRIPTION = (
-    "Hiển thị công khai tiến trình xử lý cho người dùng. Truyền MỘT chuỗi `todos_text`, MỖI DÒNG một "
-    "bước dạng `status|nội dung` (status ∈ pending|in_progress|completed). Mỗi lần cập nhật, gửi LẠI "
-    "TOÀN BỘ danh sách với status mới. KHÔNG gọi song song nhiều lần trong một lượt.")
+    "Hiển thị công khai tiến trình cho người dùng. `todos_text` là MỘT DÒNG duy nhất, các bước cách "
+    "nhau bằng ` ;; `, mỗi bước dạng `status|nội dung` (status ∈ pending|in_progress|completed). "
+    "TUYỆT ĐỐI KHÔNG xuống dòng trong todos_text. VD: "
+    "`in_progress|Đang tra cứu ;; pending|Tổng hợp kết quả`. Mỗi lần cập nhật gửi LẠI TOÀN BỘ danh "
+    "sách với status mới. KHÔNG gọi song song nhiều lần trong một lượt.")
 
 
 class FlatTodoMiddleware(TodoListMiddleware):
@@ -109,17 +117,15 @@ class FlatTodoMiddleware(TodoListMiddleware):
 
 
 _DEFAULT_FLAT_SYSTEM_PROMPT = """\
-## write_todos — nhật ký tiến trình (schema PHẲNG)
+## write_todos — nhật ký tiến trình (schema PHẲNG, MỘT DÒNG)
 
 Dùng `write_todos(todos_text="...")` để hiển thị công khai tiến trình cho người dùng (anh/chị).
-`todos_text` là MỘT chuỗi, MỖI DÒNG một bước theo dạng:
+`todos_text` là MỘT DÒNG DUY NHẤT: các bước cách nhau bằng ` ;; `, mỗi bước dạng `status|nội dung`
+(status ∈ pending | in_progress | completed). ⚠️ TUYỆT ĐỐI KHÔNG xuống dòng trong todos_text.
 
-    status|nội dung
+Ví dụ (một dòng):
 
-`status` ∈ pending | in_progress | completed. Ví dụ:
-
-    in_progress|Đang tra cứu thông tin trên hệ thống cho anh/chị
-    pending|Tổng hợp kết quả để phản hồi
+    in_progress|Đang tra cứu thông tin cho anh/chị ;; pending|Tổng hợp kết quả để phản hồi
 
 Quy tắc:
 1. Nội dung TỔNG QUÁT, thân thiện; KHÔNG ghi chi tiết kỹ thuật (tên file/skill, đường dẫn, API).
@@ -127,5 +133,5 @@ Quy tắc:
    lại `write_todos` với TOÀN BỘ danh sách (status đã cập nhật). KHÔNG gộp nhiều bước.
 3. `write_todos` chỉ để theo dõi — KHÔNG phải câu trả lời. Đáp án cuối viết ở message SAU lần gọi
    `write_todos` cuối cùng.
-4. KHÔNG gọi `write_todos` song song nhiều lần trong một lượt.
+4. Gọi `write_todos` RIÊNG một lượt (KHÔNG kèm tool khác trong cùng lượt, KHÔNG gọi song song).
 """
