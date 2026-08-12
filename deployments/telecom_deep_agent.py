@@ -58,12 +58,16 @@ from agenticskills import as_nat_graph
 # )
 
 
-from agenticskills.deep_agents.native_optimize_deep_agent_v2 import build_native_optimize_deep_agent_v2
+# v3 = bản đã SỬA lỗi write_todos + streaming (FlatTodoMiddleware, args phẳng `todos_text`).
+# enable_todos=True -> có tiến trình todos cho todobridge/planbridge, KHÔNG lỗi 'Extra data' khi
+# streaming (nhờ schema phẳng). v2 (nested) giữ nguyên làm mốc; xem native_optimize_deep_agent_v2.py.bak.
+from agenticskills.deep_agents.native_optimize_deep_agent_v3 import build_native_optimize_deep_agent_v3
 from agenticskills.deep_agents.todo_event_stream import as_nat_graph_todo_events
 my_agent = as_nat_graph_todo_events(
-    build_native_optimize_deep_agent_v2(
+    build_native_optimize_deep_agent_v3(
         skills_subdir="Telecom_Skills",
         env_var="TELECOM_SKILL_DIR",
         llm_name="llm",
+        enable_todos=True,          # flat write_todos -> todos + streaming chạy được
         )
     )

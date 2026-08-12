@@ -1,12 +1,27 @@
-"""native_optimize_deep_agent_v2 — như v1, THÊM `TodoListMiddleware` để "phát trực tiếp" cho
-người dùng biết agent **đang dùng skill nào** và **đang định làm gì**.
+"""native_optimize_deep_agent_v3 — bản kế thừa v2, SỬA hẳn lỗi `write_todos` + streaming.
 
-⚠️ LƯU Ý: bản v2 dùng `write_todos` SCHEMA LỒNG (`todos=[{content,status}]`) -> gây lỗi
-`Extra data: line 1 column 8 (char 7)` khi chạy STREAMING trên proxy vLLM/Qwen parser kén. Bản
-đã SỬA hẳn là `native_optimize_deep_agent_v3.py` (dùng `FlatTodoMiddleware`, args phẳng). GIỮ v2
-nguyên bản làm mốc so sánh; backup ở `native_optimize_deep_agent_v2.py.bak`.
+Sinh ra để KHÔNG sửa trực tiếp `native_optimize_deep_agent_v2.py` (giữ v2 nguyên bản làm mốc so
+sánh; bản backup ở `native_optimize_deep_agent_v2.py.bak`).
 
-Khác v1 (`native_optimize_deep_agent.py`) ở hai điểm:
+BỐI CẢNH (đã verify bằng build+liệt-kê-tool + NIM): tool `write_todos` gốc có args LỒNG
+(`todos=[{content,status(enum)}]`, `$defs`/`$ref`). Khi deep agent chạy STREAMING, tool-parser
+tăng-dần của vLLM/Qwen ráp JSON lồng nhiều tầng qua từng token -> sai/nối thừa ->
+`litellm.BadRequestError ... Extra data: line 1 column 8 (char 7)`. `execute`/`read_file` (args
+phẳng) KHÔNG dính. Lỗi cần CẢ HAI: (nested args) × (streaming).
+
+KHÁC v2 (điểm cốt lõi của v3):
+* **`todos_flat_schema=True` (MẶC ĐỊNH)** -> dùng `FlatTodoMiddleware`: tool VẪN tên `write_todos`
+  nhưng args PHẲNG `todos_text: str` (mỗi dòng `status|nội dung`), giống `execute` -> parser
+  streaming KHÔNG nghẹn -> **giữ được todos + streaming đồng thời, KHÔNG cần sửa proxy**. State vẫn
+  `todos=[{content,status}]` nên todobridge/todo_event_stream/bridge mới đọc y như cũ.
+  Đặt `todos_flat_schema=False` để quay lại schema lồng gốc (sẽ lỗi khi streaming trên proxy kén).
+* **`enable_todos=False` (mặc định an toàn)**: khi tắt, prompt tự chuyển sang bản v1 (không nhắc
+  write_todos) -> tránh model ứng biến ghi planning vào file qua `write_file`.
+
+Mọi tối ưu của v1/v2 giữ nguyên: LLM từ config (thinking OFF + temperature 0 theo YAML), lean
+HarnessProfile, `resolve_skill_placeholders`, `llm_from_config` (né 'Extra data' do metadata-hook).
+
+Khác v1 (`native_optimize_deep_agent.py`) ở hai điểm (khi `enable_todos=True`):
 
 1. **Gắn `TodoListMiddleware`** (langchain, không nằm trong stack mặc định 0.7.0) qua tham số
    `middleware=` của `create_deep_agent`. Middleware này cấp tool `write_todos(todos=[{content,
@@ -42,6 +57,7 @@ from agenticskills.common import (
     resolve_skills_dir,
 )
 from agenticskills.deep_agents.native_optimize_deep_agent import (
+    NATIVE_OPTIMIZE_SYSTEM_PROMPT,  # prompt v1: chỉ read_file + execute, KHÔNG nhắc write_todos
     _register_lean_profile,
     llm_from_config,
     resolve_skill_placeholders,
@@ -98,7 +114,7 @@ Quy tắc:
 """
 
 # Prompt gốc của agent — kèm chỉ dẫn dùng todos để lộ tiến trình.
-NATIVE_OPTIMIZE_V2_SYSTEM_PROMPT = """\
+NATIVE_OPTIMIZE_V3_SYSTEM_PROMPT = """\
 Bạn là Elite Enterprise AI Agent có một thư viện SKILL. Ưu tiên: ĐÚNG, MINH BẠCH tiến trình, NHANH.
 
 Quy trình mỗi yêu cầu:
@@ -119,7 +135,7 @@ _STATUS_ICON = {"completed": "✅", "in_progress": "🔧", "pending": "⬜"}
 # --------------------------------------------------------------------------- #
 # Builder
 # --------------------------------------------------------------------------- #
-def build_native_optimize_deep_agent_v2(
+def build_native_optimize_deep_agent_v3(
     skills_dir: Path | str | None = None,
     *,
     skills_subdir: str | None = None,
@@ -130,7 +146,8 @@ def build_native_optimize_deep_agent_v2(
     exclude_summarization: bool = True,
     excluded_tools: tuple[str, ...] = ("edit_file", ),
     profile_key: str | None = None,
-    enable_todos: bool = True,
+    enable_todos: bool = False,
+    todos_flat_schema: bool = True,
     todos_system_prompt: str = TODOS_SYSTEM_PROMPT,
     system_prompt: str | None = None,
     memory=None,
@@ -143,11 +160,23 @@ def build_native_optimize_deep_agent_v2(
     """Như `build_native_optimize_deep_agent` nhưng thêm `TodoListMiddleware` (lộ tiến trình).
 
     Args (chỉ nêu phần MỚI so với v1):
-        enable_todos: `True` (mặc định) -> gắn `TodoListMiddleware` (tool `write_todos`) để agent
-            công khai "đang dùng skill nào / định làm gì". `False` -> hành vi giống hệt v1.
-            ⚠️ `write_todos` (schema LỒNG) gây 'Extra data' khi STREAMING trên proxy parser kén —
-            dùng `native_optimize_deep_agent_v3` (FlatTodoMiddleware) nếu cần todos + streaming.
-        todos_system_prompt: prompt hướng dẫn cách ghi todos (mặc định ép ghi rõ skill + việc).
+        enable_todos: `False` (MẶC ĐỊNH — đã đổi) -> KHÔNG gắn `write_todos`; tập tool khi đó là tập
+            CON của `build_deep_agent` (đã kiểm chứng KHÔNG dính lỗi tool-parser).
+            `True` -> gắn `TodoListMiddleware` (tool `write_todos`) để lộ tiến trình cho todobridge.
+            ⚠️ CẢNH BÁO (đã verify): `write_todos` có schema LỒNG NHAU (`$defs`/`$ref` -> mảng object
+            `{content, status(enum)}`). Trên proxy vLLM/LiteLLM có tool-parser kén, chính tool này gây
+            `litellm.BadRequestError ... Extra data: line 1 column 8 (char 7)`. Đây là tool DUY NHẤT
+            v2-có-todos có mà `build_deep_agent` (chạy được) KHÔNG có. CHỈ bật `True` sau khi đã sửa
+            tool-parser của proxy (vd vLLM `--tool-call-parser hermes`), hoặc trên endpoint parser khỏe
+            (NIM). Xem `my_instruction/` để biết chi tiết.
+        todos_flat_schema: `True` (mặc định) -> khi bật todos, dùng `FlatTodoMiddleware`: tool
+            `write_todos(todos_text: str)` schema PHẲNG (mỗi dòng `status|nội dung`) -> parser
+            streaming KHÔNG nghẹn -> **todos + streaming chạy đồng thời, không cần sửa proxy**.
+            `False` -> dùng `TodoListMiddleware` gốc (schema LỒNG `todos=[{content,status}]`) — sẽ
+            gây 'Extra data' khi streaming trên proxy parser kén. Downstream (todobridge) không đổi
+            vì cả hai đều ghi state `todos=[{content,status}]`.
+        todos_system_prompt: prompt hướng dẫn cách ghi todos (CHỈ dùng cho bản lồng gốc; bản phẳng
+            có prompt riêng trong `flat_todo_middleware`).
 
     Các tham số còn lại xem `native_optimize_deep_agent.build_native_optimize_deep_agent`.
 
@@ -158,7 +187,7 @@ def build_native_optimize_deep_agent_v2(
     resolved = resolve_skills_dir(skills_dir, skills_subdir=skills_subdir, env_var=env_var)
     _n = resolve_skill_placeholders(resolved)
     if _n:
-        logger.info("[native_optimize_v2] đã resolve '<skill_dir>' -> path tuyệt đối trong %d SKILL.md.", _n)
+        logger.info("[native_optimize_v3] đã resolve '<skill_dir>' -> path tuyệt đối trong %d SKILL.md.", _n)
 
     builder = SyncBuilder.current()
     # LLM lấy TRỰC TIẾP từ config NAT (`llms.<llm_name>`) — KHÔNG dựng lại bằng LangChain nữa.
@@ -187,14 +216,28 @@ def build_native_optimize_deep_agent_v2(
     except ImportError as exc:  # pragma: no cover - optional dep
         raise ImportError("Cần 'deepagents' (>=0.7). Cài: pip install deepagents") from exc
 
-    # TodoListMiddleware nằm ở langchain (không thuộc stack mặc định 0.7.0) -> gắn qua middleware=.
+    # Middleware todos (không thuộc stack mặc định 0.7.0) -> gắn qua middleware=.
     middleware: list[Any] = []
     if enable_todos:
-        try:
-            from langchain.agents.middleware import TodoListMiddleware
-            middleware.append(TodoListMiddleware(system_prompt=todos_system_prompt))
-        except ImportError:  # pragma: no cover
-            logger.warning("[native_optimize_v2] không import được TodoListMiddleware -> bỏ qua todos.")
+        if todos_flat_schema:
+            # BẢN PHẲNG (khuyến nghị): tool `write_todos(todos_text: str)` — args một-chuỗi như
+            # `execute` -> parser streaming KHÔNG nghẹn -> dùng được todos + streaming đồng thời,
+            # KHÔNG cần sửa proxy. Downstream (todobridge/todo_event_stream) không đổi (state `todos`).
+            from agenticskills.deep_agents.flat_todo_middleware import FlatTodoMiddleware
+            middleware.append(FlatTodoMiddleware())
+            logger.info("[native_optimize_v3] enable_todos=True (schema PHẲNG) -> `write_todos(todos_text)` "
+                        "né lỗi 'Extra data' của streaming tool-parser; giữ được streaming đáp án.")
+        else:
+            # BẢN GỐC (schema lồng): tool `write_todos(todos=[{content,status}])`.
+            try:
+                from langchain.agents.middleware import TodoListMiddleware
+                middleware.append(TodoListMiddleware(system_prompt=todos_system_prompt))
+                logger.warning(
+                    "[native_optimize_v3] enable_todos=True + todos_flat_schema=False -> `write_todos` "
+                    "SCHEMA LỒNG. ⚠️ Trên proxy vLLM/Qwen parser kén, tool này gây 'Extra data ...(char 7)' "
+                    "KHI STREAMING. Chỉ dùng khi proxy đã sửa --tool-call-parser hoặc endpoint parser khỏe.")
+            except ImportError:  # pragma: no cover
+                logger.warning("[native_optimize_v3] không import được TodoListMiddleware -> bỏ qua todos.")
 
     if backend is None:
         backend = LocalShellBackend(
@@ -205,7 +248,7 @@ def build_native_optimize_deep_agent_v2(
         )
 
     logger.info(
-        "[native_optimize_v2] skills=%s | llm=%s (từ config, thinking/temperature theo YAML) | "
+        "[native_optimize_v3] skills=%s | llm=%s (từ config, thinking/temperature theo YAML) | "
         "todos=%s | lean_profile=%s",
         resolved,
         model_name,
@@ -213,11 +256,17 @@ def build_native_optimize_deep_agent_v2(
         lean_profile,
     )
 
+    # Prompt PHẢI khớp bộ tool: khi enable_todos=False thì KHÔNG có tool `write_todos`, nên dùng
+    # prompt v1 (chỉ read_file + execute). Nếu vẫn dùng prompt V2 (nhắc "gọi write_todos ghi kế
+    # hoạch") mà không có tool đó -> model ứng biến, ghi nội dung todo/planning vào FILE qua
+    # `write_file`. Chọn đúng prompt để tránh hành vi này.
+    default_prompt = NATIVE_OPTIMIZE_V3_SYSTEM_PROMPT if enable_todos else NATIVE_OPTIMIZE_SYSTEM_PROMPT
+
     return create_deep_agent(
         model=llm,
         tools=mcp_tools,
-        system_prompt=system_prompt or NATIVE_OPTIMIZE_V2_SYSTEM_PROMPT,
-        middleware=middleware,         # <- TodoListMiddleware ở đây
+        system_prompt=system_prompt or default_prompt,
+        middleware=middleware,         # <- TodoListMiddleware ở đây (chỉ khi enable_todos)
         skills=[str(resolved)],
         backend=backend,
         checkpointer=memory,
@@ -331,7 +380,7 @@ def as_nat_graph_todos(graph: Any, *, stream_nodes=("model", ), strip_think: boo
 
     Dùng thay `as_nat_graph` cho agent v2::
 
-        my_agent = as_nat_graph_todos(build_native_optimize_deep_agent_v2(skills_subdir="Telecom_Skills"))
+        my_agent = as_nat_graph_todos(build_native_optimize_deep_agent_v3(skills_subdir="Telecom_Skills"))
     """
 
     def _factory(config: Any = None, **_: Any) -> TodoStreamGraph:

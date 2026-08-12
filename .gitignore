@@ -10,3 +10,4 @@ conf
 .qdrant_skills
 .tmp
 *.pdf
+*.bak
