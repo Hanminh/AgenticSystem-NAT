@@ -24,51 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from typing import Any
 
 from agenticskills.deep_agents.todo_event_stream import _push_todo_step
-from agenticskills.deep_agents.tool_passthrough import SCRIPT_OUTPUT_NAME
+from agenticskills.deep_agents.tool_passthrough import SCRIPT_STEP_NAME, _push_script_step
 from agenticskills.langgraph_agents.stream import ThinkStripper, _text_of, strip_think_full
 
 logger = logging.getLogger(__name__)
-
-
-def _push_script_step(name: str, payload_text: str) -> bool:
-    """Đẩy một cặp TOOL_START + TOOL_END mang output của script vào Context hiện tại.
-
-    Front-end NAT sẽ phát ra `intermediate_data:` với name = "Tool: <name>" và payload chứa
-    `**Input:**`/`**Output:**` = `payload_text`. Bridge đọc step này rồi phát item type riêng.
-
-    Trả True nếu đẩy được (đang trong Context của workflow), False nếu không.
-    """
-    try:
-        from nat.builder.context import Context  # lazy: chỉ có ý nghĩa khi chạy trong NAT
-        from nat.data_models.intermediate_step import (
-            IntermediateStepPayload,
-            IntermediateStepType,
-            StreamEventData,
-        )
-    except Exception:  # pragma: no cover
-        return False
-
-    try:
-        mgr = Context.get().intermediate_step_manager
-    except Exception:  # pragma: no cover - không có Context
-        return False
-
-    uid = f"script-{uuid.uuid4().hex[:12]}"
-    try:
-        mgr.push_intermediate_step(IntermediateStepPayload(
-            event_type=IntermediateStepType.TOOL_START, name=name, UUID=uid,
-            data=StreamEventData(input=payload_text)))
-        mgr.push_intermediate_step(IntermediateStepPayload(
-            event_type=IntermediateStepType.TOOL_END, name=name, UUID=uid,
-            data=StreamEventData(input=payload_text, output=payload_text)))
-        return True
-    except Exception:  # pragma: no cover
-        logger.exception("[stream_passthrough] không đẩy được intermediate step '%s'", name)
-        return False
 
 
 class PassthroughEventStreamGraph:
@@ -130,10 +92,12 @@ class PassthroughEventStreamGraph:
             if mode == "custom":
                 if isinstance(payload, dict) and isinstance(payload.get("script_output"), dict):
                     so = payload["script_output"]
-                    name = str(so.get("name") or SCRIPT_OUTPUT_NAME)
+                    name = str(so.get("name") or SCRIPT_STEP_NAME)
                     text = so.get("text")
                     if isinstance(text, str) and text:
-                        _push_script_step(name, text)   # -> NAT intermediate step (KHÔNG vào data:)
+                        ok = _push_script_step(name, text)   # -> NAT intermediate step (KHÔNG vào data:)
+                        logger.info("[stream_passthrough] nhận custom '%s' (%d ký tự) -> push step=%s",
+                                    name, len(text), ok)
                 continue
 
             # mode == "updates": bắt todos đổi -> ĐẨY step write_todos; nhớ assistant cuối (fallback).
