@@ -24,18 +24,18 @@ NAT wires this via `deployments/telecom_deep_agent.py:my_agent`.
 """
 
 from agenticskills import as_nat_graph
-# from agenticskills.langgraph_agents.optimize_agent_v3 import build_optimized_agent_v3
+from agenticskills.langgraph_agents.optimize_agent_v3 import build_optimized_agent_v3
 
-# my_agent = as_nat_graph(
-#     build_optimized_agent_v3(
-#         skills_subdir="Telecom_Skills",
-#         env_var="TELECOM_SKILL_DIR",       # optional override
-#         llm_name="llm",
-#         main_llm_disable_thinking=True,     # LLM chính (ReAct) + selector: thinking TẮT
-#         # mcp_config_path="conf/mcp_servers.json",   # optionally add MCP tools
-#     ),
-#     stream_nodes=["model"],
-# )
+my_agent = as_nat_graph(
+    build_optimized_agent_v3(
+        skills_subdir="Telecom_Skills",
+        env_var="TELECOM_SKILL_DIR",       # optional override
+        llm_name="llm",
+        main_llm_disable_thinking=True,     # LLM chính (ReAct) + selector: thinking TẮT
+        # mcp_config_path="conf/mcp_servers.json",   # optionally add MCP tools
+    ),
+    stream_nodes=["model"],
+)
 
 # --- Bản deepagents cũ (giữ để A/B). Bỏ comment nếu THỰC SỰ cần planning/filesystem/sub-agents
 #     của deepagents — nhưng nó có lỗi "narrate rồi dừng" mô tả ở đầu file.
@@ -61,13 +61,13 @@ from agenticskills import as_nat_graph
 # v3 = bản đã SỬA lỗi write_todos + streaming (FlatTodoMiddleware, args phẳng `todos_text`).
 # enable_todos=True -> có tiến trình todos cho todobridge/planbridge, KHÔNG lỗi 'Extra data' khi
 # streaming (nhờ schema phẳng). v2 (nested) giữ nguyên làm mốc; xem native_optimize_deep_agent_v2.py.bak.
-from agenticskills.deep_agents.native_optimize_deep_agent_v3 import build_native_optimize_deep_agent_v3
-from agenticskills.deep_agents.todo_event_stream import as_nat_graph_todo_events
-my_agent = as_nat_graph_todo_events(
-    build_native_optimize_deep_agent_v3(
-        skills_subdir="Telecom_Skills",
-        env_var="TELECOM_SKILL_DIR",
-        llm_name="llm",
-        enable_todos=True,          # flat write_todos -> todos + streaming chạy được
-        )
-    )
+# from agenticskills.deep_agents.native_optimize_deep_agent_v3 import build_native_optimize_deep_agent_v3
+# from agenticskills.deep_agents.todo_event_stream import as_nat_graph_todo_events
+# my_agent = as_nat_graph_todo_events(
+#     build_native_optimize_deep_agent_v3(
+#         skills_subdir="Telecom_Skills",
+#         env_var="TELECOM_SKILL_DIR",
+#         llm_name="llm",
+#         enable_todos=True,          # flat write_todos -> todos + streaming chạy được
+#         )
+#     )
