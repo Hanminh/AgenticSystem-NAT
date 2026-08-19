@@ -25,6 +25,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from nat.builder.framework_enum import LLMFrameworkEnum  # type: ignore
 from nat.builder.sync_builder import SyncBuilder  # type: ignore
 
 from agenticskills.common import (
@@ -42,15 +43,15 @@ from agenticskills.deep_agents.native_optimize_deep_agent_v3 import (
     NATIVE_OPTIMIZE_V3_SYSTEM_PROMPT,  # prompt v3 (có write_todos)
     TODOS_SYSTEM_PROMPT,
 )
-from agenticskills.deep_agents.tool_passthrough import make_package_details_tool
 from agenticskills.mcp import load_mcp_tools
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Mặc định: skill v3 chứa package_details.py.
-DEFAULT_PACKAGE_SKILL_SUBDIR = "tu-van-goi-skill-optimize-v3"
+# Tên tool (instance trong YAML `functions:`) mà deep agent lấy qua builder.get_tool.
+# Đây là NAT function `telecom_package_details` (package telecom_functions) — thay cho script cũ.
+DEFAULT_PACKAGE_TOOL_NAME = "send_package_details"
 
 # Chỉ dẫn thêm cho model: khi nào dùng tool passthrough (nối vào system prompt).
 _PASSTHROUGH_PROMPT_SUFFIX = """\
@@ -81,9 +82,7 @@ def build_native_optimize_deep_agent_passthrough(
     todos_flat_schema: bool = True,
     todos_system_prompt: str = TODOS_SYSTEM_PROMPT,
     system_prompt: str | None = None,
-    package_details_script: Path | str | None = None,
-    package_skill_subdir: str = DEFAULT_PACKAGE_SKILL_SUBDIR,
-    package_details_timeout: int = 20,
+    package_tool_name: str = DEFAULT_PACKAGE_TOOL_NAME,
     memory=None,
     mcp_servers: dict | None = None,
     mcp_config_path: Path | str | None = None,
@@ -93,11 +92,14 @@ def build_native_optimize_deep_agent_passthrough(
 ):
     """Như `build_native_optimize_deep_agent_v3` nhưng thêm tool `send_package_details`.
 
+    Tool `send_package_details` giờ là một **NAT function** (`_type: telecom_package_details`,
+    package `telecom_functions`) — KHÔNG còn dùng script `package_details.py`. Nó fetch chi tiết
+    gói, đẩy step `package_details_payload` (JSON) tới client, và trả ack ngắn (ngữ cảnh sạch).
+
     Args (chỉ nêu phần MỚI so với v3):
-        package_details_script: đường dẫn tuyệt đối tới `package_details.py`. Mặc định None ->
-            tự resolve `<skills_dir>/<package_skill_subdir>/scripts/package_details.py`.
-        package_skill_subdir: thư mục skill chứa `package_details.py` (mặc định skill v3).
-        package_details_timeout: timeout (giây) mỗi lần chạy script.
+        package_tool_name: tên instance function trong YAML `functions:` để lấy làm tool
+            (mặc định "send_package_details"). PHẢI khai báo trong config:
+                functions: { send_package_details: { _type: telecom_package_details } }
 
     Các tham số còn lại xem `native_optimize_deep_agent_v3.build_native_optimize_deep_agent_v3`.
 
@@ -108,17 +110,6 @@ def build_native_optimize_deep_agent_passthrough(
     _n = resolve_skill_placeholders(resolved)
     if _n:
         logger.info("[passthrough] đã resolve '<skill_dir>' -> path tuyệt đối trong %d SKILL.md.", _n)
-
-    # Đường dẫn script package_details.py (builder truyền sẵn cho tool -> model khỏi cần biết path).
-    if package_details_script is not None:
-        script_path = Path(package_details_script)
-    else:
-        script_path = Path(resolved) / package_skill_subdir / "scripts" / "package_details.py"
-    if not script_path.exists():
-        logger.warning("[passthrough] KHÔNG thấy package_details.py tại %s — tool send_package_details "
-                       "sẽ báo lỗi khi chạy. Kiểm tra lại package_skill_subdir/skills_dir.", script_path)
-    else:
-        logger.info("[passthrough] send_package_details -> %s", script_path)
 
     builder = SyncBuilder.current()
     llm = llm_from_config(builder, llm_name)
@@ -136,9 +127,18 @@ def build_native_optimize_deep_agent_passthrough(
     servers = _resolve_mcp_servers(mcp_servers, mcp_config_path)
     mcp_tools = load_mcp_tools(servers)
 
-    # Tool passthrough — thêm vào bộ tool của deep agent.
-    send_package_details = make_package_details_tool(script_path, default_timeout=package_details_timeout)
-    tools: list[Any] = [*mcp_tools, send_package_details]
+    # Tool passthrough giờ là NAT function -> lấy làm tool LangChain qua builder.
+    # Yêu cầu YAML: functions: { <package_tool_name>: { _type: telecom_package_details } }.
+    tools: list[Any] = [*mcp_tools]
+    try:
+        send_package_details = builder.get_tool(package_tool_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+        tools.append(send_package_details)
+        logger.info("[passthrough] gắn NAT function '%s' làm tool send_package_details.", package_tool_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[passthrough] KHÔNG lấy được tool '%s' (%s). Khai báo trong YAML: "
+                       "functions: { %s: { _type: telecom_package_details } } và cài package "
+                       "telecom_functions. Agent vẫn chạy nhưng KHÔNG gửi được thẻ gói tới client.",
+                       package_tool_name, exc, package_tool_name)
 
     try:
         from deepagents import create_deep_agent

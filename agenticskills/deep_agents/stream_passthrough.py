@@ -28,7 +28,12 @@ from typing import Any
 
 from agenticskills.deep_agents.todo_event_stream import _push_todo_step
 from agenticskills.deep_agents.tool_passthrough import SCRIPT_STEP_NAME, _push_script_step
-from agenticskills.langgraph_agents.stream import ThinkStripper, _text_of, strip_think_full
+from agenticskills.langgraph_agents.stream import (
+    ThinkStripper,
+    _text_of,
+    reduce_to_final_message,
+    strip_think_full,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +55,11 @@ class PassthroughEventStreamGraph:
         return self._graph
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        return await self._graph.ainvoke(input, config, **kwargs)
+        # Rút còn ĐÁP ÁN CUỐI: khi deep agent là tool của agent cha (react), tránh nhét cả trace vào cha.
+        return reduce_to_final_message(await self._graph.ainvoke(input, config, **kwargs))
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        return self._graph.invoke(input, config, **kwargs)
+        return reduce_to_final_message(self._graph.invoke(input, config, **kwargs))
 
     def _wanted(self, metadata: dict) -> bool:
         if self._stream_nodes is None:

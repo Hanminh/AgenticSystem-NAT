@@ -127,6 +127,43 @@ class ThinkStripper:
         return out
 
 
+# --------------------------------------------------------------------------- #
+# Rút gọn output NON-STREAM về ĐÁP ÁN CUỐI (cho sub-agent làm tool của react)
+# --------------------------------------------------------------------------- #
+def final_answer_message(messages: list) -> BaseMessage | None:
+    """Message đáp án CUỐI: AIMessage có text và KHÔNG phải lượt gọi tool.
+
+    Lý do (đã verify qua code + Phoenix): khi một deep agent là TOOL của agent cha (workflow react),
+    tool trả về `LanggraphWrapperOutput` NGUYÊN GỐC = TOÀN BỘ messages (mọi bước trung gian) ->
+    LangChain serialize cả cụm vào ToolMessage -> react LLM phải đọc lại toàn bộ trace -> phình ngữ
+    cảnh + chậm. Rút output non-stream còn ĐÁP ÁN CUỐI để cha chỉ thấy kết quả, không thấy scratchpad.
+    """
+    msgs = messages or []
+    for m in reversed(msgs):
+        if isinstance(m, (AIMessage, AIMessageChunk)) and _text_of(m).strip() \
+                and not getattr(m, "tool_calls", None):
+            return m
+    return msgs[-1] if msgs else None
+
+
+def reduce_to_final_message(state: Any) -> Any:
+    """Thay `messages` của state bằng CHỈ message đáp án cuối (giữ mọi key khác).
+
+    `state` không phải dict / không có `messages` -> trả nguyên. Chỉ tác động đường non-stream
+    (`ainvoke`/`invoke`); `/chat/stream` dùng `astream` nên KHÔNG bị ảnh hưởng. `/generate` cũng chỉ
+    lấy `messages[-1].text` nên không đổi kết quả.
+    """
+    if not isinstance(state, dict):
+        return state
+    msgs = state.get("messages")
+    if not msgs:
+        return state
+    final = final_answer_message(msgs)
+    if final is None:
+        return state
+    return {**state, "messages": [final]}
+
+
 class StreamSafeGraph:
     """Wraps a compiled LangGraph so NAT's langgraph_wrapper can stream it.
 
@@ -176,13 +213,13 @@ class StreamSafeGraph:
         """The underlying compiled graph (for tests / introspection)."""
         return self._graph
 
-    # -- non-streaming: unchanged behaviour (this is the path `/generate` uses) --
+    # -- non-streaming: rút output còn ĐÁP ÁN CUỐI (để sub-agent-làm-tool không phình ngữ cảnh cha) --
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        return await self._graph.ainvoke(input, config, **kwargs)
+        return reduce_to_final_message(await self._graph.ainvoke(input, config, **kwargs))
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        return self._graph.invoke(input, config, **kwargs)
+        return reduce_to_final_message(self._graph.invoke(input, config, **kwargs))
 
     # -- streaming: token chunks only, never a message-less state update --------
 

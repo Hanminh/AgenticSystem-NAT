@@ -46,7 +46,12 @@ from agenticskills.deep_agents.native_optimize_deep_agent import (
     llm_from_config,
     resolve_skill_placeholders,
 )
-from agenticskills.langgraph_agents.stream import ThinkStripper, _text_of, strip_think_full
+from agenticskills.langgraph_agents.stream import (
+    ThinkStripper,
+    _text_of,
+    reduce_to_final_message,
+    strip_think_full,
+)
 from agenticskills.mcp import load_mcp_tools
 
 load_dotenv()
@@ -257,10 +262,11 @@ class TodoStreamGraph:
         return self._graph
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        return await self._graph.ainvoke(input, config, **kwargs)
+        # Rút còn ĐÁP ÁN CUỐI: khi deep agent là tool của agent cha (react), tránh nhét cả trace vào cha.
+        return reduce_to_final_message(await self._graph.ainvoke(input, config, **kwargs))
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        return self._graph.invoke(input, config, **kwargs)
+        return reduce_to_final_message(self._graph.invoke(input, config, **kwargs))
 
     def _wanted(self, metadata: dict) -> bool:
         if self._stream_nodes is None:
